@@ -6,10 +6,12 @@ from SingleUESTA.network import Network
 
 SECONDS_PER_MINUTE = 60
 FEET_PER_MILE = 5280
-DELTA_T_H = 1.5  # seconds
-DELTA_T_C = 1.0  # seconds
+# The reaction-time/vehicle-length constants follow Levin & Boyles (2016) from the
+# reading list and were specifically cited in the Team 2 CV scenario instructions.
+DELTA_T_H = 1.5  # seconds (HDV reaction time in project brief)
+DELTA_T_C = 1.0  # seconds (CV reaction time)
 VEHICLE_LENGTH_FT = 15.0
-ETA_C_DEFAULT = 0.1
+ETA_C_DEFAULT = 0.1  # Baseline eta_c requested for CV scenarios
 FRANK_WOLFE_PRECISION = 1e-6
 NO_PATH = "N/A"
 
@@ -22,6 +24,11 @@ class MultiClassSTA:
         - Two classes: human-driven vehicles (HDV) and connected vehicles (CV)
         - CV capacity derived from HDV capacity via Levin & Boyles (2016)
         - RSU indicators reduce CV costs via eta_c term when present
+
+    This class reuses the single-class Network structure from HW2/HW3 but layers in
+    the multi-class cost components discussed in Lecture 11 (multi-class UE) and the
+    Team Homework handout (Section D).  Comments below highlight where the project
+    requirements prompted deviations from the original single-class code.
     """
 
     def __init__(self, network: Network, eta_c: float = ETA_C_DEFAULT):
@@ -43,20 +50,28 @@ class MultiClassSTA:
             "CV": max(0.0, 1.0 - hdv_share)
         }
         self.demands = self._split_demands()
+        # Homework Section D requests evaluating 100% HDV (Scenario 1) and 50/50
+        # HDV/CV mixes (Scenarios 2 & 3), so this helper drives those settings.
 
     def configure_eta(self, eta_c: float):
         """Adjust the CV cost reduction parameter."""
         self.eta_c = max(0.0, eta_c)
+        # Section E(d) asks us to test eta_c = 0.05/0.15; exposing this setter
+        # keeps the solver aligned with that sensitivity study.
 
     def configure_rsu_links(self, link_ids):
         """Specify which links contain RSUs (delta_a,RSU = 1)."""
         self.rsu_links = set(link_ids or [])
+        # Scenario 3 requires setting delta_a,RSU = 1 on (4,11) and (10,15); this
+        # helper lets the notebook toggle those links without editing the TNTP file.
 
     # ------------------------------------------------------------------
     # Public solvers
     # ------------------------------------------------------------------
     def solve_user_equilibrium(self, maxIterations=200, targetGap=1e-4):
         """Frank-Wolfe for multiclass UE."""
+        # Start from a feasible all-or-nothing solution, just like the single-class
+        # Frank-Wolfe routine introduced in HW2/HW3, to respect OD conservation.
         flows = self._all_or_nothing(self._compute_class_costs(self._zero_flows()))
         history = []
 
@@ -77,6 +92,8 @@ class MultiClassSTA:
 
     def solve_system_optimal(self, maxIterations=200, targetGap=1e-4):
         """Frank-Wolfe for multiclass SO using marginal costs."""
+        # Same feasible initialization, but gradients/marginal costs replace the
+        # travel-time gradients per Lecture 12 and Section D of the project.
         flows = self._all_or_nothing(self._compute_class_costs(self._zero_flows()))
         history = []
 
@@ -121,6 +138,8 @@ class MultiClassSTA:
         denominator = speed * DELTA_T_C + VEHICLE_LENGTH_FT
         if denominator <= 0:
             return link.capacity
+        # This implements Q_{a,c} = Q_{a,H} * (v_a Δt_H + ℓ) / (v_a Δt_C + ℓ) from the
+        # Levin & Boyles reference cited in the assignment instructions.
         return link.capacity * (numerator / denominator)
 
     def _split_demands(self):
@@ -167,6 +186,9 @@ class MultiClassSTA:
         congestion = pow(ratio, 4)
         base = 1.0 + congestion
 
+        # Project Section D formula: the CV reduction term depends on either the
+        # observed CV demand ratio or an RSU indicator (delta_a,RSU) listed in
+        # the scenario sheet.
         delta = 1.0 if link_id in self.rsu_links else 0.0
         flow_term = flow_c / q_c if q_c > 0 else 0.0
         reduction_argument = max(flow_term, delta)
@@ -175,6 +197,9 @@ class MultiClassSTA:
 
         cost_h = t0 * base
         cost_c = t0 * base * multiplier
+
+        # Marginal costs are required for the SO formulation (Lecture 12) because
+        # they capture the social derivative d/dx (x * c(x)).
         return cost_h, cost_c
 
     def _link_marginal_costs(self, link_id, flow_h, flow_c):
@@ -207,7 +232,8 @@ class MultiClassSTA:
         d_base_dx_c = d_congestion * d_ratio_dx_c
 
         if reduction_argument > delta or delta == 0.0:
-            # Active derivative term (no RSU dominance or ratio surpasses delta)
+            # Active derivative term mirrors Lecture 12’s partial derivative of the
+            # cost multiplier with respect to x_C when connectivity depends on flow.
             d_reduction_arg_dx_c = d_ratio_dx_c
         else:
             d_reduction_arg_dx_c = 0.0
@@ -229,6 +255,8 @@ class MultiClassSTA:
             if all(d <= 0 for d in demands.values()):
                 continue
             for origin in range(1, self.network.numZones + 1):
+                # Same label-correcting logic as the single-class code, but we run it
+                # per class to respect class-specific link costs (Lecture 11).
                 backlink = self._shortest_path_tree(origin, costs[cls])
                 for od_id, od in self.network.ODpair.items():
                     if od.origin != origin:
@@ -306,6 +334,8 @@ class MultiClassSTA:
                 tstt += costs[cls][ij] * flows[cls][ij]
         if tsp <= 0:
             return 0.0
+        # Same definition we used in the single-class derivation: (TSTT/SPTT - 1),
+        # but aggregated over classes per the multi-class UE/SO lecture.
         return max(tstt / tsp - 1.0, 0.0)
 
     def _build_results(self, flows, costs, history, objective="UE"):
@@ -316,6 +346,8 @@ class MultiClassSTA:
                 tstt += costs[cls][ij] * flows[cls][ij]
             total_demand += sum(self.demands[cls].values())
         avg_time = tstt / max(total_demand, 1e-9)
+        # Returning both TSTT and average travel time lets the notebook populate the
+        # comparison tables requested in Section E(b)/(c) of the assignment.
         return {
             "flows": flows,
             "costs": costs,
