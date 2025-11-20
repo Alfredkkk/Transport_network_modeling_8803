@@ -12,7 +12,7 @@ DELTA_T_H = 1.5  # seconds (HDV reaction time in project brief)
 DELTA_T_C = 1.0  # seconds (CV reaction time)
 VEHICLE_LENGTH_FT = 15.0
 ETA_C_DEFAULT = 0.1  # Baseline eta_c requested for CV scenarios
-FRANK_WOLFE_PRECISION = 1e-6
+FRANK_WOLFE_PRECISION = 1e-7
 NO_PATH = "N/A"
 
 
