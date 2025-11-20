@@ -249,14 +249,16 @@ class MultiClassSTA:
         return grad_h, grad_c
 
     def _all_or_nothing(self, costs):
+        # Mirrors the single-class all-or-nothing loader but loops over classes and
+        # retains separate flow dictionaries so HDVs and CVs may take different paths.
         flows = {cls: {ij: 0.0 for ij in self.link_ids} for cls in self.classes}
         for cls in self.classes:
             demands = self.demands[cls]
             if all(d <= 0 for d in demands.values()):
                 continue
             for origin in range(1, self.network.numZones + 1):
-                # Same label-correcting logic as the single-class code, but we run it
-                # per class to respect class-specific link costs (Lecture 11).
+                # Same label-correcting logic as the single-class code, but we run
+                # it per class to respect class-specific link costs (Lecture 11).
                 backlink = self._shortest_path_tree(origin, costs[cls])
                 for od_id, od in self.network.ODpair.items():
                     if od.origin != origin:
@@ -272,6 +274,7 @@ class MultiClassSTA:
         return flows
 
     def _shortest_path_tree(self, origin, link_costs):
+        #Reuses the single-class shortest path tree loader
         backlink = {i: NO_PATH for i in self.network.node}
         label = {i: math.inf for i in self.network.node}
         label[origin] = 0.0
@@ -290,6 +293,8 @@ class MultiClassSTA:
         return backlink
 
     def _frank_wolfe_step(self, flows, direction, use_marginal):
+        # Same bisection line search as the single-class code, except the derivative
+        # sums over both classes and optionally uses marginal costs (SO case).
         current = flows
         target = direction
         low, high = 0.0, 1.0
